@@ -27,6 +27,9 @@ defmodule SchedulerWeb.Router do
     post "/members/:id/toggle_leave", TaskController, :toggle_leave
 
     post "/handover", TaskController, :handover
+    post "/handover/batch", TaskController, :batch_handover
+    post "/handover/:id/revert", TaskController, :revert_handover
+    post "/handover/:id/review", TaskController, :review_handover
     get "/handover_records", TaskController, :handover_records
   end
 end
@@ -95,6 +98,46 @@ defmodule SchedulerWeb.TaskController do
     case Scheduler.TaskManager.handover_tasks(from_member_id, to_member_id, task_ids, alert_recipient_task_ids, reason) do
       {:ok, record} ->
         json(conn, %{status: "ok", record: record})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{status: "error", reason: Atom.to_string(reason)})
+    end
+  end
+
+  def batch_handover(conn, params) do
+    from_member_id = params["from_member_id"]
+    to_member_id = params["to_member_id"]
+    reason = params["reason"] || ""
+
+    case Scheduler.TaskManager.batch_handover(from_member_id, to_member_id, reason) do
+      {:ok, record} ->
+        json(conn, %{status: "ok", record: record})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{status: "error", reason: Atom.to_string(reason)})
+    end
+  end
+
+  def revert_handover(conn, %{"id" => id}) do
+    case Scheduler.TaskManager.revert_handover(id) do
+      {:ok, record_id} ->
+        json(conn, %{status: "ok", record_id: record_id})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{status: "error", reason: Atom.to_string(reason)})
+    end
+  end
+
+  def review_handover(conn, %{"id" => id}) do
+    case Scheduler.TaskManager.review_handover(id) do
+      {:ok, record_id} ->
+        json(conn, %{status: "ok", record_id: record_id})
 
       {:error, reason} ->
         conn

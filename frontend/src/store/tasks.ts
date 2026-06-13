@@ -84,6 +84,9 @@ interface TaskStore {
   addMetric: () => void
   toggleMemberLeave: (memberId: string) => Promise<void>
   handover: (fromMemberId: string, toMemberId: string, taskIds: string[], alertRecipientOfTaskIds: string[], reason: string) => Promise<boolean>
+  batchHandover: (fromMemberId: string, toMemberId: string, reason: string) => Promise<boolean>
+  revertHandover: (recordId: string) => Promise<boolean>
+  reviewHandover: (recordId: string) => Promise<boolean>
   syncFromBackend: () => Promise<void>
 }
 
@@ -189,6 +192,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         createdAt: typeof (data.record as any).created_at === 'string'
           ? new Date((data.record as any).created_at).getTime()
           : (data.record as any).created_at || Date.now(),
+        reviewed: (data.record as any).reviewed ?? false,
+        reverted: (data.record as any).reverted ?? false,
       }
 
       set({
@@ -228,6 +233,8 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       alertRecipientOfTaskIds,
       createdAt: Date.now(),
       reason,
+      reviewed: false,
+      reverted: false,
     }
 
     set({
@@ -263,8 +270,199 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         ...r,
         alertRecipientOfTaskIds: r.alert_recipient_task_ids || [],
         createdAt: typeof r.created_at === 'string' ? new Date(r.created_at).getTime() : r.created_at,
+        reviewed: r.reviewed ?? false,
+        reverted: r.reverted ?? false,
       }))
       set({ handoverRecords: normalized })
     }
+  },
+  batchHandover: async (fromMemberId, toMemberId, reason) => {
+    const data = await safeFetch<{ status: string; record: any }>(
+      `${API_BASE}/handover/batch`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from_member_id: fromMemberId,
+          to_member_id: toMemberId,
+          reason: reason,
+        }),
+      }
+    )
+
+    if (data && data.status === 'ok' && data.record) {
+      const state = get()
+      const fromMember = state.members.find(m => m.id === fromMemberId)!
+      const toMember = state.members.find(m => m.id === toMemberId)!
+
+      const updatedTasks = state.tasks.map(t => {
+        let updated = { ...t }
+        if (updated.owner === fromMember.name) {
+          updated = { ...updated, owner: toMember.name }
+        }
+        if (updated.alertRecipients && updated.alertRecipients.includes(fromMember.name)) {
+          updated = {
+            ...updated,
+            alertRecipients: updated.alertRecipients
+              .filter(r => r !== fromMember.name)
+              .concat(toMember.name),
+          }
+        }
+        return updated
+      })
+
+      const normalizedRecord: HandoverRecord = {
+        ...data.record,
+        alertRecipientOfTaskIds: data.record.alert_recipient_task_ids || [],
+        createdAt: typeof data.record.created_at === 'string'
+          ? new Date(data.record.created_at).getTime()
+          : data.record.created_at || Date.now(),
+        reviewed: data.record.reviewed ?? false,
+        reverted: data.record.reverted ?? false,
+      }
+
+      set({
+        tasks: updatedTasks,
+        handoverRecords: [normalizedRecord, ...state.handoverRecords],
+      })
+      return true
+    }
+
+    const state = get()
+    const fromMember = state.members.find(m => m.id === fromMemberId)!
+    const toMember = state.members.find(m => m.id === toMemberId)!
+
+    const taskIds = state.tasks.filter(t => t.owner === fromMember.name).map(t => t.id)
+    const alertRecipientOfTaskIds = state.tasks
+      .filter(t => t.alertRecipients?.includes(fromMember.name))
+      .map(t => t.id)
+
+    const updatedTasks = state.tasks.map(t => {
+      let updated = { ...t }
+      if (updated.owner === fromMember.name) {
+        updated = { ...updated, owner: toMember.name }
+      }
+      if (updated.alertRecipients && updated.alertRecipients.includes(fromMember.name)) {
+        updated = {
+          ...updated,
+          alertRecipients: updated.alertRecipients
+            .filter(r => r !== fromMember.name)
+            .concat(toMember.name),
+        }
+      }
+      return updated
+    })
+
+    const record: HandoverRecord = {
+      id: `handover-${Date.now()}`,
+      fromMemberId,
+      fromMemberName: fromMember.name,
+      toMemberId,
+      toMemberName: toMember.name,
+      taskIds,
+      alertRecipientOfTaskIds,
+      createdAt: Date.now(),
+      reason,
+      reviewed: false,
+      reverted: false,
+    }
+
+    set({
+      tasks: updatedTasks,
+      handoverRecords: [record, ...state.handoverRecords],
+    })
+    return true
+  },
+  revertHandover: async (recordId) => {
+    const data = await safeFetch<{ status: string; record_id: string }>(
+      `${API_BASE}/handover/${recordId}/revert`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' } }
+    )
+
+    if (data && data.status === 'ok') {
+      const state = get()
+      const record = state.handoverRecords.find(r => r.id === recordId)
+      if (!record) return false
+
+      const fromMember = state.members.find(m => m.id === record.fromMemberId)!
+      const toMember = state.members.find(m => m.id === record.toMemberId)!
+
+      const updatedTasks = state.tasks.map(t => {
+        let updated = { ...t }
+        if (record.taskIds.includes(t.id)) {
+          updated = { ...updated, owner: fromMember.name }
+        }
+        if (record.alertRecipientOfTaskIds.includes(t.id) && updated.alertRecipients) {
+          updated = {
+            ...updated,
+            alertRecipients: updated.alertRecipients
+              .filter(r => r !== toMember.name)
+              .concat(fromMember.name),
+          }
+        }
+        return updated
+      })
+
+      set({
+        tasks: updatedTasks,
+        handoverRecords: state.handoverRecords.map(r =>
+          r.id === recordId ? { ...r, reverted: true } : r
+        ),
+      })
+      return true
+    }
+
+    const state = get()
+    const record = state.handoverRecords.find(r => r.id === recordId)
+    if (!record) return false
+
+    const fromMember = state.members.find(m => m.id === record.fromMemberId)!
+    const toMember = state.members.find(m => m.id === record.toMemberId)!
+
+    const updatedTasks = state.tasks.map(t => {
+      let updated = { ...t }
+      if (record.taskIds.includes(t.id)) {
+        updated = { ...updated, owner: fromMember.name }
+      }
+      if (record.alertRecipientOfTaskIds.includes(t.id) && updated.alertRecipients) {
+        updated = {
+          ...updated,
+          alertRecipients: updated.alertRecipients
+            .filter(r => r !== toMember.name)
+            .concat(fromMember.name),
+        }
+      }
+      return updated
+    })
+
+    set({
+      tasks: updatedTasks,
+      handoverRecords: state.handoverRecords.map(r =>
+        r.id === recordId ? { ...r, reverted: true } : r
+      ),
+    })
+    return true
+  },
+  reviewHandover: async (recordId) => {
+    const data = await safeFetch<{ status: string; record_id: string }>(
+      `${API_BASE}/handover/${recordId}/review`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' } }
+    )
+
+    if (data && data.status === 'ok') {
+      set({
+        handoverRecords: get().handoverRecords.map(r =>
+          r.id === recordId ? { ...r, reviewed: true } : r
+        ),
+      })
+      return true
+    }
+
+    set({
+      handoverRecords: get().handoverRecords.map(r =>
+        r.id === recordId ? { ...r, reviewed: true } : r
+      ),
+    })
+    return true
   },
 }))

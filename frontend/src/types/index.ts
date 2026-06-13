@@ -34,6 +34,8 @@ export interface HandoverRecord {
   alertRecipientOfTaskIds: string[]
   createdAt: number
   reason: string
+  reviewed?: boolean
+  reverted?: boolean
 }
 
 export interface ClusterNode {

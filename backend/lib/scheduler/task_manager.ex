@@ -36,6 +36,18 @@ defmodule Scheduler.TaskManager do
     GenServer.call(__MODULE__, {:handover_tasks, from_member_id, to_member_id, task_ids, alert_recipient_task_ids, reason})
   end
 
+  def batch_handover(from_member_id, to_member_id, reason \\ "") do
+    GenServer.call(__MODULE__, {:batch_handover, from_member_id, to_member_id, reason})
+  end
+
+  def revert_handover(record_id) do
+    GenServer.call(__MODULE__, {:revert_handover, record_id})
+  end
+
+  def review_handover(record_id) do
+    GenServer.call(__MODULE__, {:review_handover, record_id})
+  end
+
   def get_handover_records, do: GenServer.call(__MODULE__, :get_handover_records)
 
   # Server callbacks
@@ -70,7 +82,7 @@ defmodule Scheduler.TaskManager do
         alert_recipients: alert_recipients
       }
     end
-    {:ok, %{tasks: tasks, counter: 1009, members: members, handover_records: []}}
+    {:ok, %{tasks: tasks, counter: 1009, members: members, handover_records: [], handover_counter: 0}}
   end
 
   @impl true
@@ -179,8 +191,9 @@ defmodule Scheduler.TaskManager do
           task
         end)
 
+        counter = state.handover_counter + 1
         record = %{
-          id: "handover-#{System.system_time(:millisecond)}",
+          id: "handover-#{counter}",
           from_member_id: from_member_id,
           from_member_name: from_member.name,
           to_member_id: to_member_id,
@@ -188,10 +201,143 @@ defmodule Scheduler.TaskManager do
           task_ids: task_ids,
           alert_recipient_task_ids: alert_recipient_task_ids,
           reason: reason,
+          reviewed: false,
+          reverted: false,
           created_at: DateTime.utc_now()
         }
 
-        {:reply, {:ok, record}, %{state | tasks: tasks, handover_records: [record | state.handover_records]}}
+        {:reply, {:ok, record}, %{state | tasks: tasks, handover_records: [record | state.handover_records], handover_counter: counter}}
+    end
+  end
+
+  @impl true
+  def handle_call({:batch_handover, from_member_id, to_member_id, reason}, _from, state) do
+    from_member = Enum.find(state.members, &(&1.id == from_member_id))
+    to_member = Enum.find(state.members, &(&1.id == to_member_id))
+
+    cond do
+      is_nil(from_member) ->
+        {:reply, {:error, :from_member_not_found}, state}
+
+      is_nil(to_member) ->
+        {:reply, {:error, :to_member_not_found}, state}
+
+      from_member_id == to_member_id ->
+        {:reply, {:error, :same_member}, state}
+
+      true ->
+        task_ids = state.tasks
+          |> Enum.filter(&(&1.owner == from_member.name))
+          |> Enum.map(& &1.id)
+
+        alert_recipient_task_ids = state.tasks
+          |> Enum.filter(fn t -> is_list(t.alert_recipients) and from_member.name in t.alert_recipients end)
+          |> Enum.map(& &1.id)
+
+        if Enum.empty?(task_ids) and Enum.empty?(alert_recipient_task_ids) do
+          {:reply, {:error, :nothing_to_handover}, state}
+        else
+          tasks = Enum.map(state.tasks, fn task ->
+            task = if task.owner == from_member.name do
+              %{task | owner: to_member.name, logs: task.logs ++ ["[INFO] Handover: #{from_member.name} -> #{to_member.name}"]}
+            else
+              task
+            end
+
+            task = if is_list(task.alert_recipients) and from_member.name in task.alert_recipients do
+              new_recipients = task.alert_recipients
+                |> Enum.filter(&(&1 != from_member.name))
+                |> Kernel.++([to_member.name])
+                |> Enum.uniq()
+              %{task | alert_recipients: new_recipients}
+            else
+              task
+            end
+
+            task
+          end)
+
+          counter = state.handover_counter + 1
+          record = %{
+            id: "handover-#{counter}",
+            from_member_id: from_member_id,
+            from_member_name: from_member.name,
+            to_member_id: to_member_id,
+            to_member_name: to_member.name,
+            task_ids: task_ids,
+            alert_recipient_task_ids: alert_recipient_task_ids,
+            reason: reason,
+            reviewed: false,
+            reverted: false,
+            created_at: DateTime.utc_now()
+          }
+
+          {:reply, {:ok, record}, %{state | tasks: tasks, handover_records: [record | state.handover_records], handover_counter: counter}}
+        end
+    end
+  end
+
+  @impl true
+  def handle_call({:revert_handover, record_id}, _from, state) do
+    case Enum.find(state.handover_records, &(&1.id == record_id)) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      record ->
+        if record.reverted do
+          {:reply, {:error, :already_reverted}, state}
+        else
+          from_member = Enum.find(state.members, &(&1.id == record.from_member_id))
+          to_member = Enum.find(state.members, &(&1.id == record.to_member_id))
+
+          if is_nil(from_member) or is_nil(to_member) do
+            {:reply, {:error, :member_not_found}, state}
+          else
+            tasks = Enum.map(state.tasks, fn task ->
+              task = if task.id in record.task_ids do
+                %{task | owner: from_member.name, logs: task.logs ++ ["[INFO] Handover reverted: #{to_member.name} -> #{from_member.name}"]}
+              else
+                task
+              end
+
+              task = if task.id in record.alert_recipient_task_ids and is_list(task.alert_recipients) do
+                new_recipients = task.alert_recipients
+                  |> Enum.filter(&(&1 != to_member.name))
+                  |> Kernel.++([from_member.name])
+                  |> Enum.uniq()
+                %{task | alert_recipients: new_recipients}
+              else
+                task
+              end
+
+              task
+            end)
+
+            updated_records = Enum.map(state.handover_records, fn r ->
+              if r.id == record_id, do: %{r | reverted: true}, else: r
+            end)
+
+            {:reply, {:ok, record_id}, %{state | tasks: tasks, handover_records: updated_records}}
+          end
+        end
+    end
+  end
+
+  @impl true
+  def handle_call({:review_handover, record_id}, _from, state) do
+    case Enum.find(state.handover_records, &(&1.id == record_id)) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      record ->
+        if record.reverted do
+          {:reply, {:error, :already_reverted}, state}
+        else
+          updated_records = Enum.map(state.handover_records, fn r ->
+            if r.id == record_id, do: %{r | reviewed: true}, else: r
+          end)
+          {:reply, {:ok, record_id}, %{state | handover_records: updated_records}}
+        end
     end
   end
 
