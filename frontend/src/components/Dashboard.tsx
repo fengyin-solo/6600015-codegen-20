@@ -3,6 +3,7 @@ import { Layout, Tabs, Statistic, Row, Col, Card, Tag, Button, Input, Table, Dra
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
 import { useTaskStore } from '../store/tasks'
 import type { Task, TaskStatus } from '../types'
+import HandoverPanel from './HandoverPanel'
 
 const { Header, Content } = Layout
 
@@ -19,6 +20,7 @@ export default function Dashboard() {
     { title: 'ID', dataIndex: 'id', key: 'id', width: 100 },
     { title: '名称', dataIndex: 'name', key: 'name' },
     { title: '状态', dataIndex: 'status', key: 'status', render: (s: TaskStatus) => <Tag color={STATUS_COLORS[s]}>{s}</Tag> },
+    { title: '负责人', dataIndex: 'owner', key: 'owner', render: (owner: string) => owner ? <Tag color="blue">{owner}</Tag> : '-' },
     { title: '节点', dataIndex: 'node', key: 'node' },
     { title: '重试', key: 'retries', render: (_: any, r: Task) => `${r.retries}/${r.maxRetries}` },
     { title: '耗时', key: 'duration', render: (_: any, r: Task) => r.duration ? `${(r.duration / 1000).toFixed(1)}s` : '-' },
@@ -115,6 +117,7 @@ export default function Dashboard() {
               ))}
             </Row>
           )},
+          { key: 'handover', label: '任务交接', children: <HandoverPanel /> },
         ]} />
 
         {/* Task Detail Drawer */}
@@ -126,6 +129,8 @@ export default function Dashboard() {
                 <Descriptions.Item label="名称">{store.selectedTask.name}</Descriptions.Item>
                 <Descriptions.Item label="状态"><Tag color={STATUS_COLORS[store.selectedTask.status]}>{store.selectedTask.status}</Tag></Descriptions.Item>
                 <Descriptions.Item label="执行节点">{store.selectedTask.node}</Descriptions.Item>
+                <Descriptions.Item label="负责人">{store.selectedTask.owner || '-'}</Descriptions.Item>
+                <Descriptions.Item label="告警接收人">{store.selectedTask.alertRecipients?.length ? store.selectedTask.alertRecipients.map(r => <Tag key={r} color="orange">{r}</Tag>) : '-'}</Descriptions.Item>
                 <Descriptions.Item label="重试次数">{store.selectedTask.retries}/{store.selectedTask.maxRetries}</Descriptions.Item>
                 <Descriptions.Item label="创建时间">{new Date(store.selectedTask.createdAt).toLocaleString()}</Descriptions.Item>
                 <Descriptions.Item label="耗时">{store.selectedTask.duration ? `${(store.selectedTask.duration / 1000).toFixed(1)}s` : '-'}</Descriptions.Item>

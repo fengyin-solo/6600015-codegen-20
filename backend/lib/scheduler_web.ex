@@ -22,6 +22,12 @@ defmodule SchedulerWeb.Router do
     post "/tasks/:id/cancel", TaskController, :cancel
     get "/stats", TaskController, :stats
     get "/nodes", TaskController, :nodes
+
+    get "/members", TaskController, :members
+    post "/members/:id/toggle_leave", TaskController, :toggle_leave
+
+    post "/handover", TaskController, :handover
+    get "/handover_records", TaskController, :handover_records
   end
 end
 
@@ -66,6 +72,40 @@ defmodule SchedulerWeb.TaskController do
       }
     end
     json(conn, %{nodes: nodes})
+  end
+
+  def members(conn, _params) do
+    members = Scheduler.TaskManager.list_members()
+    json(conn, %{members: Enum.map(members, &Map.from_struct/1)})
+  end
+
+  def toggle_leave(conn, %{"id" => id}) do
+    Scheduler.TaskManager.toggle_member_leave(id)
+    members = Scheduler.TaskManager.list_members()
+    json(conn, %{status: "ok", members: Enum.map(members, &Map.from_struct/1)})
+  end
+
+  def handover(conn, params) do
+    from_member_id = params["from_member_id"]
+    to_member_id = params["to_member_id"]
+    task_ids = params["task_ids"] || []
+    alert_recipient_task_ids = params["alert_recipient_task_ids"] || []
+    reason = params["reason"] || ""
+
+    case Scheduler.TaskManager.handover_tasks(from_member_id, to_member_id, task_ids, alert_recipient_task_ids, reason) do
+      {:ok, record} ->
+        json(conn, %{status: "ok", record: record})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{status: "error", reason: Atom.to_string(reason)})
+    end
+  end
+
+  def handover_records(conn, _params) do
+    records = Scheduler.TaskManager.get_handover_records()
+    json(conn, %{handover_records: records})
   end
 end
 

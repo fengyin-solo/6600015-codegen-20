@@ -13,6 +13,27 @@ export interface Task {
   maxRetries: number
   duration?: number
   logs: string[]
+  owner?: string
+  alertRecipients?: string[]
+}
+
+export interface Member {
+  id: string
+  name: string
+  department: string
+  onLeave: boolean
+}
+
+export interface HandoverRecord {
+  id: string
+  fromMemberId: string
+  fromMemberName: string
+  toMemberId: string
+  toMemberName: string
+  taskIds: string[]
+  alertRecipientOfTaskIds: string[]
+  createdAt: number
+  reason: string
 }
 
 export interface ClusterNode {
